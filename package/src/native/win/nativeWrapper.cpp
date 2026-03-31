@@ -3197,13 +3197,8 @@ public:
         }
     }
     
-    void remove() override {
-        if (controller) {
-            controller->Close();
-            controller = nullptr;
-        }
-        webview = nullptr;
-    }
+    // Defined after ContainerView (forward declaration insufficient for member access).
+    void remove() override;
 
     // Override transparency implementation for WebView2
     void setTransparent(bool transparent) override {
@@ -3346,7 +3341,7 @@ public:
     }
 
     void resize(const RECT& frame, const char* masksJson) override {
-        
+
         if (controller) {
             // WebView2 operations must be called from main thread to avoid TYPE_E_BADVARTYPE
             MainThreadDispatcher::dispatch_async([this, frame]() {
@@ -4551,7 +4546,7 @@ public:
     void AddAbstractView(std::shared_ptr<AbstractView> view) {
     
         // Add to front of vector so it's top-most first
-        m_abstractViews.insert(m_abstractViews.begin(), view); 
+        m_abstractViews.insert(m_abstractViews.begin(), view);
         BringViewToFront(view->webviewId);
         
         // TODO: Temporarily disable mirror mode for CEF testing
@@ -4569,6 +4564,35 @@ public:
             m_abstractViews.end());
     }
 };
+
+void WebView2View::remove() {
+    uint32_t viewId = this->webviewId;
+    void* self = this;
+
+    MainThreadDispatcher::dispatch_sync([this, viewId, self]() {
+        for (auto it = g_webview2Views.begin(); it != g_webview2Views.end(); ++it) {
+            if (it->second == self) {
+                g_webview2Views.erase(it);
+                break;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_abstractViewsMutex);
+            g_abstractViews.erase(viewId);
+        }
+        for (auto& pair : g_containerViews) {
+            if (pair.second) {
+                pair.second->RemoveAbstractViewWithId(viewId);
+            }
+        }
+
+        if (controller) {
+            controller->Close();
+            controller = nullptr;
+        }
+        webview = nullptr;
+    });
+}
 
 // Helper function to get or create container for a window
 ContainerView* GetOrCreateContainer(HWND parentWindow) {
