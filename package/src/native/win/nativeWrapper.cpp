@@ -2715,7 +2715,16 @@ public:
     template<typename Func>
     static auto dispatch_sync(Func&& func) -> decltype(func()) {
         using ReturnType = decltype(func());
-        
+        // Already on main thread — execute directly to avoid PostMessage + future.get() deadlock.
+        if (GetCurrentThreadId() == g_mainThreadId) {
+            if constexpr (std::is_void_v<ReturnType>) {
+                func();
+                return;
+            } else {
+                return func();
+            }
+        }
+
         if constexpr (std::is_void_v<ReturnType>) {
             auto promise = std::make_shared<std::promise<void>>();
             auto future = promise->get_future();
