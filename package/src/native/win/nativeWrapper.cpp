@@ -3029,6 +3029,7 @@ private:
     HandlePostMessage internalBridgeCallbackHandler;
     bool isSandboxed;
     HWND containerHwnd = nullptr;  // Container window for masking
+    HWND childHwnd = nullptr;      // Actual WebView2 child window created by the controller
 
 public:
     std::string pendingUrl;
@@ -3063,8 +3064,16 @@ public:
         containerHwnd = hwnd;
     }
 
+    void setChildHwnd(HWND hwnd) {
+        childHwnd = hwnd;
+    }
+
     ComPtr<ICoreWebView2> getWebView() const {
         return webview;
+    }
+
+    HWND getChildHwnd() const {
+        return childHwnd;
     }
 
     void setCreationComplete(bool complete) {
@@ -3210,6 +3219,12 @@ public:
         controller->put_IsVisible(transparent ? FALSE : TRUE);
     }
 
+    void setChildWindowHidden(bool hidden) {
+        if (childHwnd && IsWindow(childHwnd)) {
+            ShowWindow(childHwnd, hidden ? SW_HIDE : SW_SHOW);
+        }
+    }
+
     // Override passthrough implementation for WebView2
     void setPassthrough(bool enable) override {
         AbstractView::setPassthrough(enable); // Call base implementation to set the flag
@@ -3351,8 +3366,15 @@ public:
                     sprintf_s(errorLog, "[WebView2] put_Bounds failed for webview %u, HRESULT: 0x%08X", webviewId, result);
                     ::log(errorLog);
                 }
+                // Bring this controller's child window to front after bounds update.
+                // Without this, overlapping WebView2 tabs (same bounds) can end up
+                // behind a sibling overlay — the active tab must be topmost.
+                if (childHwnd && IsWindow(childHwnd)) {
+                    SetWindowPos(childHwnd, HWND_TOP, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
             });
-            
+
             visualBounds = frame;
             bool maskChanged = false;
             // Check if masksJson is nullptr, empty, or just "[]" (empty array)
@@ -4542,7 +4564,9 @@ public:
     }
     
     HWND GetHwnd() const { return m_hwnd; }
-    
+
+    const std::vector<std::shared_ptr<AbstractView>>& GetAbstractViews() const { return m_abstractViews; }
+
     void AddAbstractView(std::shared_ptr<AbstractView> view) {
     
         // Add to front of vector so it's top-most first
@@ -6036,6 +6060,27 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
 
                             // Store container HWND for masking support
                             view->setContainerHwnd(container->GetHwnd());
+
+                            // Find this controller's Chrome child window.
+                            // WebView2 registers its window class as Unicode, so use
+                            // FindWindowExW directly (Electrobun builds without UNICODE).
+                            HWND newChildHwnd = nullptr;
+                            HWND cHwnd = container->GetHwnd();
+                            for (HWND child = FindWindowExW(cHwnd, nullptr, L"Chrome_WidgetWin_0", nullptr);
+                                 child != nullptr;
+                                 child = FindWindowExW(cHwnd, child, L"Chrome_WidgetWin_0", nullptr)) {
+                                bool claimed = false;
+                                for (auto& v : container->GetAbstractViews()) {
+                                    auto wv2 = dynamic_cast<WebView2View*>(v.get());
+                                    if (wv2 && wv2->getChildHwnd() == child) {
+                                        claimed = true;
+                                        break;
+                                    }
+                                }
+                                if (!claimed) { newChildHwnd = child; break; }
+                            }
+
+                            view->setChildHwnd(newChildHwnd);
 
                             // Set up JavaScript bridge objects
                             view->setupJavaScriptBridges();
@@ -8480,6 +8525,9 @@ ELECTROBUN_EXPORT void webviewSetHidden(AbstractView *abstractView, BOOL hidden)
         // UI operations must be performed on the main thread
         MainThreadDispatcher::dispatch_sync([abstractView, hidden]() {
             abstractView->setTransparent(hidden);
+            if (auto webview2View = dynamic_cast<WebView2View*>(abstractView)) {
+                webview2View->setChildWindowHidden(hidden);
+            }
         });
     }
 }
