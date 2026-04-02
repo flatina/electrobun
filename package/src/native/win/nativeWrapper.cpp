@@ -6243,42 +6243,8 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                             CoTaskMemFree(uriWStr);
                                         }
 
-                                        // Check if Ctrl key is held
-                                        SHORT ctrlState = GetKeyState(VK_CONTROL);
-                                        bool isCtrlHeld = (ctrlState & 0x8000) != 0;
-
-                                        // Handle Ctrl+click for new window
-                                        if (isCtrlHeld && capturedHandler) {
-                                            printf("[WebView2 NavigationStarting] Ctrl+click detected, url=%s\n", uri.c_str());
-
-                                            // Debounce: ignore ctrl+click navigations within 500ms
-                                            auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                std::chrono::system_clock::now().time_since_epoch()).count() / 1000.0;
-
-                                            if (now - WebView2View::lastCtrlClickTime >= 0.5) {
-                                                WebView2View::lastCtrlClickTime = now;
-
-                                                // Escape URL for JSON
-                                                std::string escapedUrl;
-                                                for (char c : uri) {
-                                                    switch (c) {
-                                                        case '"': escapedUrl += "\\\""; break;
-                                                        case '\\': escapedUrl += "\\\\"; break;
-                                                        default: escapedUrl += c; break;
-                                                    }
-                                                }
-
-                                                std::string eventData = "{\"url\":\"" + escapedUrl +
-                                                                       "\",\"isCmdClick\":true,\"modifierFlags\":0}";
-                                                printf("[WebView2 NavigationStarting] Firing new-window-open: %s\n", eventData.c_str());
-                                                capturedHandler(capturedWebviewId, _strdup("new-window-open"), _strdup(eventData.c_str()));
-
-                                                args->put_Cancel(TRUE);
-                                                return S_OK;
-                                            } else {
-                                                printf("[WebView2 NavigationStarting] Debounced\n");
-                                            }
-                                        }
+                                        // Note: Ctrl+click is handled entirely by the preload script
+                                        // (preventDefault + new-window-open event). No native cancellation needed.
 
                                         // Check navigation rules synchronously from native-stored rules
                                         bool shouldAllow = true;
@@ -6311,6 +6277,43 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                             args->put_Cancel(TRUE);
                                         }
 
+                                        return S_OK;
+                                    }).Get(),
+                                nullptr);
+
+                            // Intercept new window requests (target="_blank", window.open)
+                            webview->add_NewWindowRequested(
+                                Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                                    [capturedWebviewId, capturedHandler](ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                                        wchar_t* uriWStr = nullptr;
+                                        args->get_Uri(&uriWStr);
+                                        std::string uri;
+                                        if (uriWStr) {
+                                            int size = WideCharToMultiByte(CP_UTF8, 0, uriWStr, -1, nullptr, 0, nullptr, nullptr);
+                                            if (size > 0) {
+                                                uri.resize(size - 1);
+                                                WideCharToMultiByte(CP_UTF8, 0, uriWStr, -1, &uri[0], size, nullptr, nullptr);
+                                            }
+                                            CoTaskMemFree(uriWStr);
+                                        }
+
+                                        printf("[WebView2] NewWindowRequested: %s\n", uri.c_str());
+
+                                        if (capturedHandler && !uri.empty()) {
+                                            std::string escapedUrl;
+                                            for (char c : uri) {
+                                                switch (c) {
+                                                    case '"': escapedUrl += "\\\""; break;
+                                                    case '\\': escapedUrl += "\\\\"; break;
+                                                    default: escapedUrl += c; break;
+                                                }
+                                            }
+                                            std::string eventData = "{\"url\":\"" + escapedUrl +
+                                                                   "\",\"isCmdClick\":false,\"modifierFlags\":0}";
+                                            capturedHandler(capturedWebviewId, _strdup("new-window-open"), _strdup(eventData.c_str()));
+                                        }
+
+                                        args->put_Handled(TRUE);
                                         return S_OK;
                                     }).Get(),
                                 nullptr);
