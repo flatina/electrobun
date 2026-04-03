@@ -6422,23 +6422,23 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                                     break;
                                             }
                                             
-                                            printf("WebView2: %s requested for %s\n", permissionName.c_str(), origin.c_str());
+                                            printf("[WebView2] %s requested for %s\n", permissionName.c_str(), origin.c_str());
                                             
                                             // Check cache first
                                             PermissionStatus cachedStatus = getPermissionFromCache(origin, permType);
                                             
                                             if (cachedStatus == PermissionStatus::ALLOWED) {
-                                                printf("WebView2: Using cached permission: User previously allowed %s for %s\n", permissionName.c_str(), origin.c_str());
+                                                printf("[WebView2] Using cached permission: User previously allowed %s for %s\n", permissionName.c_str(), origin.c_str());
                                                 args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
                                                 return S_OK;
                                             } else if (cachedStatus == PermissionStatus::DENIED) {
-                                                printf("WebView2: Using cached permission: User previously blocked %s for %s\n", permissionName.c_str(), origin.c_str());
+                                                printf("[WebView2] Using cached permission: User previously blocked %s for %s\n", permissionName.c_str(), origin.c_str());
                                                 args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
                                                 return S_OK;
                                             }
                                             
                                             // No cached permission, show dialog
-                                            printf("WebView2: No cached permission found for %s, showing dialog\n", origin.c_str());
+                                            printf("[WebView2] No cached permission found for %s, showing dialog\n", origin.c_str());
                                             
                                             std::string message = "This page wants to access ";
                                             switch (kind) {
@@ -6471,11 +6471,11 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                             if (result == IDYES) {
                                                 args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
                                                 cachePermission(origin, permType, PermissionStatus::ALLOWED);
-                                                printf("WebView2: User allowed %s for %s (cached)\n", permissionName.c_str(), origin.c_str());
+                                                printf("[WebView2] User allowed %s for %s (cached)\n", permissionName.c_str(), origin.c_str());
                                             } else {
                                                 args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
                                                 cachePermission(origin, permType, PermissionStatus::DENIED);
-                                                printf("WebView2: User blocked %s for %s (cached)\n", permissionName.c_str(), origin.c_str());
+                                                printf("[WebView2] User blocked %s for %s (cached)\n", permissionName.c_str(), origin.c_str());
                                             }
                                             
                                             return S_OK;
@@ -6493,7 +6493,7 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                     webview4->add_DownloadStarting(
                                         Callback<ICoreWebView2DownloadStartingEventHandler>(
                                             [](ICoreWebView2* sender, ICoreWebView2DownloadStartingEventArgs* args) -> HRESULT {
-                                                printf("WebView2: Download starting\n");
+                                                printf("[WebView2] Download starting\n");
 
                                                 // Get the download operation
                                                 Microsoft::WRL::ComPtr<ICoreWebView2DownloadOperation> downloadOp;
@@ -6578,12 +6578,12 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                                         if (size > 0) {
                                                             std::string utf8Path(size - 1, '\0');
                                                             WideCharToMultiByte(CP_UTF8, 0, destPath.c_str(), -1, &utf8Path[0], size, nullptr, nullptr);
-                                                            printf("WebView2: Downloading to %s\n", utf8Path.c_str());
+                                                            printf("[WebView2] Downloading to %s\n", utf8Path.c_str());
                                                         }
 
                                                         CoTaskMemFree(downloadsPath);
                                                     } else {
-                                                        printf("WebView2: Could not get Downloads folder, using default behavior\n");
+                                                        printf("[WebView2] Could not get Downloads folder, using default behavior\n");
                                                     }
 
                                                     if (uriWStr) CoTaskMemFree(uriWStr);
@@ -6593,9 +6593,9 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                                 return S_OK;
                                             }).Get(),
                                         nullptr);
-                                    printf("WebView2: Download handler registered successfully\n");
+                                    printf("[WebView2] Download handler registered successfully\n");
                                 } else {
-                                    printf("WebView2: Warning - Could not get ICoreWebView2_4 interface for download handling\n");
+                                    printf("[WebView2] Warning - Could not get ICoreWebView2_4 interface for download handling\n");
                                 }
 
                             } else {
