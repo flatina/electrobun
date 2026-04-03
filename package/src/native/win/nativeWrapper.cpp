@@ -6318,6 +6318,18 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                     }).Get(),
                                 nullptr);
 
+                            // Handle window.close() from page scripts
+                            webview->add_WindowCloseRequested(
+                                Callback<ICoreWebView2WindowCloseRequestedEventHandler>(
+                                    [capturedWebviewId, capturedHandler](ICoreWebView2* sender, IUnknown* args) -> HRESULT {
+                                        printf("[WebView2] WindowCloseRequested for webview %u\n", capturedWebviewId);
+                                        if (capturedHandler) {
+                                            capturedHandler(capturedWebviewId, _strdup("window-close-requested"), _strdup("{}"));
+                                        }
+                                        return S_OK;
+                                    }).Get(),
+                                nullptr);
+
                             // Add NavigationCompleted handler for did-navigate event
                             webview->add_NavigationCompleted(
                                 Callback<ICoreWebView2NavigationCompletedEventHandler>(

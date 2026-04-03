@@ -36,4 +36,6 @@ export default {
 		new ElectrobunEvent<DetailData, {}>("download-completed", data),
 	downloadFailed: (data: DetailData) =>
 		new ElectrobunEvent<DetailData, {}>("download-failed", data),
+	windowCloseRequested: (data: DetailData) =>
+		new ElectrobunEvent<DetailData, {}>("window-close-requested", data),
 };

@@ -2388,6 +2388,7 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		"load-started": "loadStarted",
 		"load-committed": "loadCommitted",
 		"load-finished": "loadFinished",
+		"window-close-requested": "windowCloseRequested",
 	};
 
 	const mappedName = eventMap[eventName];
