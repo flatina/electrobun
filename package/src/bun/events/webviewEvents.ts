@@ -38,4 +38,6 @@ export default {
 		new ElectrobunEvent<DetailData, {}>("download-failed", data),
 	windowCloseRequested: (data: DetailData) =>
 		new ElectrobunEvent<DetailData, {}>("window-close-requested", data),
+	permissionRequested: (data: DetailData) =>
+		new ElectrobunEvent<DetailData, {}>("permission-requested", data),
 };

@@ -695,6 +695,10 @@ export const native = (() => {
 				args: [FFIType.function],
 				returns: FFIType.void,
 			},
+			completePermissionRequest: {
+				args: [FFIType.u32, FFIType.u32],
+				returns: FFIType.void,
+			},
 			testFFI2: {
 				args: [FFIType.function],
 				returns: FFIType.void,
@@ -711,6 +715,12 @@ export const native = (() => {
 })();
 
 export const hasFFI = native !== null;
+
+/** Complete a deferred permission request. state: 0=allow, 1=deny. */
+export function completePermissionRequest(requestId: number, state: number): void {
+	if (!native) return;
+	native.symbols.completePermissionRequest(requestId, state);
+}
 
 // PostMessage bridge for carrot workers (inter-carrot communication, host events).
 // Created when __bunnyCarrotBootstrap exists, regardless of FFI availability.
@@ -2389,6 +2399,7 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		"load-committed": "loadCommitted",
 		"load-finished": "loadFinished",
 		"window-close-requested": "windowCloseRequested",
+		"permission-requested": "permissionRequested",
 	};
 
 	const mappedName = eventMap[eventName];
@@ -2417,7 +2428,8 @@ const webviewEventHandler = (id: number, eventName: string, detail: string) => {
 		eventName === "download-started" ||
 		eventName === "download-progress" ||
 		eventName === "download-completed" ||
-		eventName === "download-failed"
+		eventName === "download-failed" ||
+		eventName === "permission-requested"
 	) {
 		try {
 			parsedDetail = JSON.parse(detail);

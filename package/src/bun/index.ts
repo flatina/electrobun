@@ -44,7 +44,7 @@ import type {
 	ApplicationMenuItemConfig,
 } from "./proc/native";
 import { BuildConfig, type BuildConfigType } from "./core/BuildConfig";
-import { bridge, hasFFI } from "./proc/native";
+import { bridge, hasFFI, completePermissionRequest } from "./proc/native";
 
 // Carrot boot state — populated from __bunnyCarrotBootstrap injected by Bunny Ears
 let _carrotManifest: Record<string, unknown> | null = null;
@@ -230,6 +230,7 @@ export {
 	Session,
 	WGPUBridge,
 	BuildConfig,
+	completePermissionRequest,
 };
 
 // Default Export

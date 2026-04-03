@@ -526,6 +526,20 @@ static HANDLE g_job_object = nullptr;  // Job object to track all child processe
 
 // Quit/shutdown coordination
 static QuitRequestedHandler g_quitRequestedHandler = nullptr;
+
+// Pending permission requests awaiting async response via completePermissionRequest()
+struct PendingPermission {
+    Microsoft::WRL::ComPtr<ICoreWebView2Deferral> deferral;
+    Microsoft::WRL::ComPtr<ICoreWebView2PermissionRequestedEventArgs> args;
+    uint32_t webviewId;
+    std::chrono::steady_clock::time_point createdAt;
+};
+static std::mutex g_pendingPermissionsMutex;
+static std::unordered_map<uint32_t, PendingPermission> g_pendingPermissions;
+static std::atomic<uint32_t> g_nextPermissionRequestId{1};
+
+static void drainPendingPermissions(uint32_t webviewId); // defined after MainThreadDispatcher
+
 static std::atomic<bool> g_shutdownComplete{false};
 static std::atomic<bool> g_eventLoopStopping{false};
 static DWORD g_mainThreadId = 0;
@@ -3547,6 +3561,7 @@ public:
                 break;
             }
         }
+        drainPendingPermissions(this->webviewId);
         {
             std::lock_guard<std::mutex> lock(g_abstractViewsMutex);
             g_abstractViews.erase(this->webviewId);
@@ -6230,6 +6245,8 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                 Callback<ICoreWebView2NavigationStartingEventHandler>(
                                     [capturedWebviewId, capturedHandler](ICoreWebView2* sender, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
                                         printf("[WebView2] NavigationStarting fired for webview %u\n", capturedWebviewId);
+                                        // Complete any pending permission deferrals from the previous page
+                                        drainPendingPermissions(capturedWebviewId);
                                         // Get URL first - needed for both ctrl+click and navigation rules
                                         wchar_t* uriWStr = nullptr;
                                         args->get_Uri(&uriWStr);
@@ -6380,13 +6397,12 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                 // Add permission request handler
                                 webview->add_PermissionRequested(
                                     Callback<ICoreWebView2PermissionRequestedEventHandler>(
-                                        [](ICoreWebView2* sender, ICoreWebView2PermissionRequestedEventArgs* args) -> HRESULT {
+                                        [capturedWebviewId, capturedHandler](ICoreWebView2* sender, ICoreWebView2PermissionRequestedEventArgs* args) -> HRESULT {
                                             COREWEBVIEW2_PERMISSION_KIND kind;
                                             args->get_PermissionKind(&kind);
-                                            
+
                                             wchar_t* uriWStr = nullptr;
                                             args->get_Uri(&uriWStr);
-                                            
                                             std::string uri;
                                             if (uriWStr) {
                                                 int size = WideCharToMultiByte(CP_UTF8, 0, uriWStr, -1, nullptr, 0, nullptr, nullptr);
@@ -6396,88 +6412,52 @@ static std::shared_ptr<WebView2View> createWebView2View(uint32_t webviewId,
                                                 }
                                                 CoTaskMemFree(uriWStr);
                                             }
-                                            
                                             std::string origin = getOriginFromUrl(uri);
-                                            PermissionType permType = PermissionType::OTHER;
-                                            std::string permissionName = "Permission";
-                                            
-                                            // Determine permission type
+
+                                            std::string permissionName;
                                             switch (kind) {
                                                 case COREWEBVIEW2_PERMISSION_KIND_CAMERA:
                                                 case COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:
-                                                    permType = PermissionType::USER_MEDIA;
-                                                    permissionName = "Camera & Microphone Access";
-                                                    break;
+                                                    permissionName = "Camera & Microphone"; break;
                                                 case COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:
-                                                    permType = PermissionType::GEOLOCATION;
-                                                    permissionName = "Location Access";
-                                                    break;
+                                                    permissionName = "Geolocation"; break;
                                                 case COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:
-                                                    permType = PermissionType::NOTIFICATIONS;
-                                                    permissionName = "Notification Permission";
-                                                    break;
+                                                    permissionName = "Notifications"; break;
+                                                case COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS:
+                                                    permissionName = "Sensors"; break;
+                                                case COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ:
+                                                    permissionName = "Clipboard Read"; break;
                                                 default:
-                                                    permType = PermissionType::OTHER;
-                                                    permissionName = "Permission Request";
-                                                    break;
+                                                    permissionName = "Permission (kind=" + std::to_string((int)kind) + ")"; break;
                                             }
-                                            
                                             printf("[WebView2] %s requested for %s\n", permissionName.c_str(), origin.c_str());
-                                            
-                                            // Check cache first
-                                            PermissionStatus cachedStatus = getPermissionFromCache(origin, permType);
-                                            
-                                            if (cachedStatus == PermissionStatus::ALLOWED) {
-                                                printf("[WebView2] Using cached permission: User previously allowed %s for %s\n", permissionName.c_str(), origin.c_str());
-                                                args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
-                                                return S_OK;
-                                            } else if (cachedStatus == PermissionStatus::DENIED) {
-                                                printf("[WebView2] Using cached permission: User previously blocked %s for %s\n", permissionName.c_str(), origin.c_str());
+
+                                            // Defer response and notify bun via event
+                                            Microsoft::WRL::ComPtr<ICoreWebView2Deferral> deferral;
+                                            args->GetDeferral(&deferral);
+                                            if (!deferral) {
+                                                // Fallback: no deferral support, deny immediately
                                                 args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
                                                 return S_OK;
                                             }
-                                            
-                                            // No cached permission, show dialog
-                                            printf("[WebView2] No cached permission found for %s, showing dialog\n", origin.c_str());
-                                            
-                                            std::string message = "This page wants to access ";
-                                            switch (kind) {
-                                                case COREWEBVIEW2_PERMISSION_KIND_CAMERA:
-                                                    message += "your camera.\n\nDo you want to allow this?";
-                                                    break;
-                                                case COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:
-                                                    message += "your microphone.\n\nDo you want to allow this?";
-                                                    break;
-                                                case COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:
-                                                    message += "your location.\n\nDo you want to allow this?";
-                                                    break;
-                                                case COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:
-                                                    message += "show notifications.\n\nDo you want to allow this?";
-                                                    break;
-                                                default:
-                                                    message += "additional permissions.\n\nDo you want to allow this?";
-                                                    break;
+
+                                            uint32_t requestId = g_nextPermissionRequestId++;
+                                            {
+                                                std::lock_guard<std::mutex> lock(g_pendingPermissionsMutex);
+                                                g_pendingPermissions[requestId] = {
+                                                    deferral, args, capturedWebviewId,
+                                                    std::chrono::steady_clock::now()
+                                                };
                                             }
-                                            
-                                            // Show Windows message box
-                                            int result = MessageBoxA(
-                                                nullptr,
-                                                message.c_str(),
-                                                permissionName.c_str(),
-                                                MB_YESNO | MB_ICONQUESTION | MB_TOPMOST
-                                            );
-                                            
-                                            // Handle response and cache the decision
-                                            if (result == IDYES) {
-                                                args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
-                                                cachePermission(origin, permType, PermissionStatus::ALLOWED);
-                                                printf("[WebView2] User allowed %s for %s (cached)\n", permissionName.c_str(), origin.c_str());
-                                            } else {
-                                                args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
-                                                cachePermission(origin, permType, PermissionStatus::DENIED);
-                                                printf("[WebView2] User blocked %s for %s (cached)\n", permissionName.c_str(), origin.c_str());
-                                            }
-                                            
+
+                                            // Fire "permission-requested" event to bun
+                                            std::string eventData = "{\"requestId\":" + std::to_string(requestId)
+                                                + ",\"kind\":" + std::to_string((int)kind)
+                                                + ",\"origin\":\"" + origin + "\"}";
+                                            capturedHandler(capturedWebviewId,
+                                                _strdup("permission-requested"),
+                                                _strdup(eventData.c_str()));
+
                                             return S_OK;
                                         }).Get(),
                                     nullptr);
@@ -7015,6 +6995,29 @@ BOOL WINAPI ConsoleControlHandler(DWORD dwCtrlType) {
     }
 }
 
+// Deny + Complete all pending permission requests for a given webview.
+// Called on navigation and webview destruction to prevent deferral leaks.
+static void drainPendingPermissions(uint32_t webviewId) {
+    std::vector<PendingPermission> toDrain;
+    {
+        std::lock_guard<std::mutex> lock(g_pendingPermissionsMutex);
+        for (auto it = g_pendingPermissions.begin(); it != g_pendingPermissions.end(); ) {
+            if (it->second.webviewId == webviewId) {
+                toDrain.push_back(std::move(it->second));
+                it = g_pendingPermissions.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& p : toDrain) {
+        MainThreadDispatcher::dispatch_async([p = std::move(p)]() {
+            p.args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+            p.deferral->Complete();
+        });
+    }
+}
+
 extern "C" {
 
 ELECTROBUN_EXPORT void startEventLoop(const char* identifier, const char* name, const char* channel) {
@@ -7175,6 +7178,28 @@ ELECTROBUN_EXPORT void forceExit(int code) {
 
 ELECTROBUN_EXPORT void setQuitRequestedHandler(QuitRequestedHandler handler) {
     g_quitRequestedHandler = handler;
+}
+
+// Complete a deferred permission request. state: 0=allow, 1=deny.
+// Must be paired with every GetDeferral() in the PermissionRequested handler.
+ELECTROBUN_EXPORT void completePermissionRequest(uint32_t requestId, uint32_t state) {
+    PendingPermission pending;
+    {
+        std::lock_guard<std::mutex> lock(g_pendingPermissionsMutex);
+        auto it = g_pendingPermissions.find(requestId);
+        if (it == g_pendingPermissions.end()) return;
+        pending = std::move(it->second);
+        g_pendingPermissions.erase(it);
+    }
+    // Complete on UI thread (WebView2 STA requirement)
+    MainThreadDispatcher::dispatch_async([pending = std::move(pending), state]() {
+        if (state == 0) {
+            pending.args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+        } else {
+            pending.args->put_State(COREWEBVIEW2_PERMISSION_STATE_DENY);
+        }
+        pending.deferral->Complete();
+    });
 }
 
 ELECTROBUN_EXPORT void shutdownApplication() {
@@ -7390,6 +7415,7 @@ ELECTROBUN_EXPORT void wgpuViewSetHidden(AbstractView *abstractView, BOOL hidden
 ELECTROBUN_EXPORT void wgpuViewRemove(AbstractView *abstractView) {
     if (!abstractView) return;
     uint32_t viewId = abstractView->webviewId;
+    drainPendingPermissions(viewId);
     MainThreadDispatcher::dispatch_sync([abstractView]() {
         abstractView->remove();
     });
